@@ -124,4 +124,4 @@ omarchy plugin remove io.github.xfurti.synara-status
 
 ## License
 
-MIT. See [LICENSE](LICENSE).
+MIT. See [LICENSE](LICENSE). The Synara mark is from the [official Synara repository](https://github.com/Emanuele-web04/synara/blob/main/assets/prod/logo.svg).
