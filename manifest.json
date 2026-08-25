@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.xfurti.synara-status",
+  "name": "Synara Status",
+  "version": "0.1.0",
+  "author": "Leonardo Bassanello (xFurti)",
+  "license": "MIT",
+  "description": "Bar widget and panel showing live Synara agent, worktree, and handoff status.",
+  "kinds": ["bar-widget"],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Synara Status",
+    "description": "Compact Synara status for the Omarchy bar, with a details panel for agents, worktrees, and tasks.",
+    "category": "AI",
+    "aliases": ["synara", "synara-status"],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 15,
+      "showLabel": false,
+      "dataDir": "",
+      "statusEndpoint": "",
+      "launchCommand": "gtk-launch synara"
+    },
+    "schema": [
+      {
+        "key": "showLabel",
+        "type": "boolean",
+        "label": "Show status text",
+        "description": "Show a short status word next to the bar icon.",
+        "defaultValue": false
+      },
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 5,
+        "max": 300,
+        "step": 5,
+        "defaultValue": 15
+      },
+      {
+        "key": "dataDir",
+        "type": "path",
+        "label": "Synara data directory",
+        "defaultValue": "",
+        "description": "Optional. Defaults to $SYNARA_HOME, then ~/.synara, then ~/.synara-canary."
+      },
+      {
+        "key": "statusEndpoint",
+        "type": "string",
+        "label": "Status endpoint URL",
+        "defaultValue": "",
+        "description": "Optional HTTP status URL. When set, the scanner tries it after local filesystem detection."
+      },
+      {
+        "key": "launchCommand",
+        "type": "string",
+        "label": "Open Synara command",
+        "defaultValue": "gtk-launch synara",
+        "description": "Shell command used by the panel's Open Synara button."
+      }
+    ]
+  }
+}

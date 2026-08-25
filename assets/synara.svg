@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none">
+  <!-- Original mark: a hub with three agent nodes. Recolored at runtime. -->
+  <circle cx="12" cy="12" r="2.35" fill="#ffffff"/>
+  <circle cx="12" cy="4.2" r="1.85" fill="#ffffff"/>
+  <circle cx="18.75" cy="16.15" r="1.85" fill="#ffffff"/>
+  <circle cx="5.25" cy="16.15" r="1.85" fill="#ffffff"/>
+  <path
+    stroke="#ffffff"
+    stroke-width="1.45"
+    stroke-linecap="round"
+    d="M12 9.4V6.2M14.55 13.45l3.05 1.75M9.45 13.45 6.4 15.2"
+  />
+</svg>
