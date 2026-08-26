@@ -152,6 +152,20 @@ function taskKind(task) {
   return "idle"
 }
 
+function isLiveTask(task) {
+  var kind = taskKind(task)
+  return kind === "active" || kind === "handoff" || kind === "error"
+}
+
+function liveTasks(tasks) {
+  var list = Array.isArray(tasks) ? tasks : []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    if (isLiveTask(list[i])) out.push(list[i])
+  }
+  return out
+}
+
 function deriveVisualState(snapshot) {
   var counts = snapshot && snapshot.counts ? snapshot.counts : { activeAgents: 0, worktrees: 0, handoffs: 0, recentTasks: 0 }
   var tasks = snapshot && Array.isArray(snapshot.tasks) ? snapshot.tasks : []
@@ -316,6 +330,8 @@ if (typeof module !== "undefined") {
     normalizeStatus: normalizeStatus,
     taskKind: taskKind,
     inferWorking: inferWorking,
+    isLiveTask: isLiveTask,
+    liveTasks: liveTasks,
     deriveVisualState: deriveVisualState,
     parseSnapshot: parseSnapshot,
     relativeTime: relativeTime,

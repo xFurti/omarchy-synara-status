@@ -25,7 +25,8 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
 
   readonly property var snapshot: source && source.snapshot ? source.snapshot : Model.defaultSnapshot()
-  readonly property var tasks: source && source.tasks ? source.tasks : []
+  readonly property var allTasks: source && source.tasks ? source.tasks : []
+  readonly property var tasks: Model.liveTasks(allTasks)
   readonly property var counts: source && source.counts ? source.counts : { activeAgents: 0, worktrees: 0, handoffs: 0, recentTasks: 0 }
   readonly property string visualState: source ? String(source.visualState || "idle") : "idle"
   readonly property color stateColor: colorForState(visualState)
@@ -384,9 +385,11 @@ Panel {
           Text {
             visible: root.tasks.length === 0
             width: parent.width
-            text: root.snapshot.installed
-              ? "No recent tasks yet. Start one in Synara and refresh."
-              : "Install Synara to see agents, worktrees, and handoffs here."
+            text: !root.snapshot.installed
+              ? "Install Synara to see agents, worktrees, and handoffs here."
+              : (root.allTasks.length > 0
+                ? "Nothing running right now."
+                : "No recent tasks yet. Start one in Synara and refresh.")
             color: root.dim
             font.family: root.fontFamily
             font.pixelSize: Style.font.body
