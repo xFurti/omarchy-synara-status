@@ -111,11 +111,44 @@ function normalizeStatus(value) {
   return String(value || "").replace(/^\s+|\s+$/g, "").toLowerCase().replace(/\s+/g, "_")
 }
 
+function parseTime(value) {
+  if (typeof value === "number" && isFinite(value) && value > 0) return value
+  var ms = Date.parse(String(value || ""))
+  return isFinite(ms) ? ms : 0
+}
+
+// Session `running` means the provider process is still attached. A stale
+// turn can stay `running` in SQLite after the UI has settled, so "working"
+// needs a current turn plus activity after that turn started (or a short
+// grace window at the start of a turn).
+var TURN_GRACE_MS = 60000
+
+function inferWorking(task, nowMs) {
+  if (!task) return false
+  if (typeof task.working === "boolean") return task.working
+  if (String(task.latestTurnCompletedAt || "") !== "") return false
+  var state = normalizeStatus(task.latestTurnState || "")
+  if (!ACTIVE_STATUSES[state]) return false
+  var now = nowMs === undefined ? Date.now() : Number(nowMs)
+  var started = parseTime(task.latestTurnStartedAt)
+  var activity = parseTime(task.latestActivityAt)
+  if (!started) {
+    if (!activity) return false
+    return (now - activity) <= TURN_GRACE_MS
+  }
+  if ((now - started) <= TURN_GRACE_MS) return true
+  if (!activity) return false
+  return activity >= started
+}
+
 function taskKind(task) {
-  var status = normalizeStatus(task && (task.runtimeStatus || task.sessionStatus || task.status))
-  if (ERROR_STATUSES[status] || String(task && task.lastError || "") !== "") return "error"
-  if (task && task.handoffActive) return "handoff"
-  if (ACTIVE_STATUSES[status] || (task && task.openTurn)) return "active"
+  if (!task) return "idle"
+  var status = normalizeStatus(task.status)
+  var runtime = normalizeStatus(task.runtimeStatus)
+  var session = normalizeStatus(task.sessionStatus)
+  if (ERROR_STATUSES[status] || ERROR_STATUSES[runtime] || ERROR_STATUSES[session]) return "error"
+  if (task.handoffActive === true) return "handoff"
+  if (inferWorking(task)) return "active"
   return "idle"
 }
 
@@ -212,11 +245,19 @@ function parseSnapshot(raw) {
   snapshot.error = String(data.error || "")
 
   var counts = data.counts && typeof data.counts === "object" ? data.counts : {}
+  var activeAgents = 0
+  for (var i = 0; i < snapshot.tasks.length; i++) {
+    if (taskKind(snapshot.tasks[i]) === "active") activeAgents += 1
+  }
+  var inProgressTrees = 0
+  for (var t = 0; t < snapshot.worktrees.length; t++) {
+    if (snapshot.worktrees[t] && snapshot.worktrees[t].inProgress) inProgressTrees += 1
+  }
   snapshot.counts = {
-    activeAgents: Number(counts.activeAgents || 0),
-    worktrees: Number(counts.worktrees || 0),
-    handoffs: Number(counts.handoffs || 0),
-    recentTasks: Number(counts.recentTasks || snapshot.tasks.length || 0)
+    activeAgents: activeAgents,
+    worktrees: Array.isArray(data.worktrees) ? inProgressTrees : Number(counts.worktrees || 0),
+    handoffs: Array.isArray(data.handoffs) ? snapshot.handoffs.length : Number(counts.handoffs || 0),
+    recentTasks: Array.isArray(data.tasks) ? snapshot.tasks.length : Number(counts.recentTasks || 0)
   }
 
   snapshot.visualState = deriveVisualState(snapshot)
@@ -274,6 +315,7 @@ if (typeof module !== "undefined") {
     sanitizeRuntime: sanitizeRuntime,
     normalizeStatus: normalizeStatus,
     taskKind: taskKind,
+    inferWorking: inferWorking,
     deriveVisualState: deriveVisualState,
     parseSnapshot: parseSnapshot,
     relativeTime: relativeTime,

@@ -49,6 +49,10 @@ ACTIVE_STATUSES = {
 }
 ERROR_STATUSES = {"error", "failed", "crashed", "interrupted", "unavailable"}
 HANDOFF_PHASES = {"pending", "git_applied", "uncertain", "handing_off", "handoff"}
+# Session `running` only means the provider process is attached. A turn can
+# stay `running` in SQLite after the UI has already settled, so "working"
+# needs a recent turn plus activity after that turn started.
+TURN_GRACE_SEC = 60
 
 TASK_SQL = """
 SELECT
@@ -65,11 +69,43 @@ SELECT
   t.updated_at,
   t.settled_at,
   t.goal,
+  t.pending_approval_count,
+  t.pending_user_input_count,
   p.title AS project_title,
   s.status AS session_status,
   s.provider_name,
   s.last_error,
-  r.status AS runtime_status
+  r.status AS runtime_status,
+  (
+    SELECT pt.state FROM projection_turns pt
+    WHERE pt.thread_id = t.thread_id
+    ORDER BY pt.requested_at DESC
+    LIMIT 1
+  ) AS latest_turn_state,
+  (
+    SELECT pt.started_at FROM projection_turns pt
+    WHERE pt.thread_id = t.thread_id
+    ORDER BY pt.requested_at DESC
+    LIMIT 1
+  ) AS latest_turn_started_at,
+  (
+    SELECT pt.completed_at FROM projection_turns pt
+    WHERE pt.thread_id = t.thread_id
+    ORDER BY pt.requested_at DESC
+    LIMIT 1
+  ) AS latest_turn_completed_at,
+  (
+    SELECT a.kind FROM projection_thread_activities a
+    WHERE a.thread_id = t.thread_id
+    ORDER BY a.created_at DESC, a.activity_id DESC
+    LIMIT 1
+  ) AS latest_activity_kind,
+  (
+    SELECT a.created_at FROM projection_thread_activities a
+    WHERE a.thread_id = t.thread_id
+    ORDER BY a.created_at DESC, a.activity_id DESC
+    LIMIT 1
+  ) AS latest_activity_at
 FROM projection_threads t
 LEFT JOIN projection_projects p ON p.project_id = t.project_id
 LEFT JOIN projection_thread_sessions s ON s.thread_id = t.thread_id
@@ -186,6 +222,52 @@ def normalize_status(value: Any) -> str:
     return str(value or "").strip().lower().replace(" ", "_")
 
 
+def parse_iso(value: Any) -> datetime | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def is_working(
+    turn_state: Any,
+    turn_started_at: Any,
+    turn_completed_at: Any,
+    activity_at: Any,
+    now: datetime | None = None,
+) -> bool:
+    """True only when a turn is actually generating, not merely attached."""
+    if str(turn_completed_at or "").strip():
+        return False
+    if normalize_status(turn_state) not in ACTIVE_STATUSES:
+        return False
+    clock = now or datetime.now(timezone.utc)
+    started = parse_iso(turn_started_at)
+    activity = parse_iso(activity_at)
+    if started is None:
+        if activity is None:
+            return False
+        return (clock - activity).total_seconds() <= TURN_GRACE_SEC
+    age = (clock - started).total_seconds()
+    if age <= TURN_GRACE_SEC:
+        return True
+    if activity is None:
+        return False
+    return activity >= started
+
+
+def classify_status(working: bool, session_status: str, runtime_status: str) -> str:
+    combined = runtime_status or session_status
+    if combined in ERROR_STATUSES:
+        return "error"
+    if working:
+        return "running"
+    return "idle"
+
+
 def worktree_name(path: str) -> str:
     text = str(path or "").rstrip("/")
     if not text:
@@ -276,20 +358,30 @@ def read_database(state_dir: Path) -> dict[str, Any]:
             runtime_status = normalize_status(row["runtime_status"])
             last_error = str(row["last_error"] or "")
             handoff_active = thread_id in handoff_threads or has_handoff(str(row["handoff_json"] or ""))
-            open_turn = thread_id in open_turns
-            status = runtime_status or session_status or "idle"
-            if last_error and status not in ERROR_STATUSES:
-                status = "error"
-            elif open_turn and status not in ACTIVE_STATUSES and status not in ERROR_STATUSES:
-                status = "running"
+            latest_turn_state = row["latest_turn_state"] if "latest_turn_state" in row.keys() else ""
+            latest_turn_started = row["latest_turn_started_at"] if "latest_turn_started_at" in row.keys() else ""
+            latest_turn_completed = row["latest_turn_completed_at"] if "latest_turn_completed_at" in row.keys() else ""
+            latest_activity_at = row["latest_activity_at"] if "latest_activity_at" in row.keys() else ""
+            working = is_working(
+                latest_turn_state,
+                latest_turn_started,
+                latest_turn_completed,
+                latest_activity_at,
+            )
+            status = classify_status(working, session_status, runtime_status)
             task = {
                 "id": thread_id,
                 "title": str(row["title"] or "Untitled task"),
                 "project": str(row["project_title"] or ""),
                 "provider": str(row["provider_name"] or ""),
                 "status": status,
+                "working": working,
                 "sessionStatus": session_status,
                 "runtimeStatus": runtime_status,
+                "latestTurnState": str(latest_turn_state or ""),
+                "latestTurnStartedAt": str(latest_turn_started or ""),
+                "latestTurnCompletedAt": str(latest_turn_completed or ""),
+                "latestActivityAt": str(latest_activity_at or ""),
                 "branch": branch,
                 "worktreePath": worktree_path,
                 "worktreeName": worktree_name(worktree_path),
@@ -299,7 +391,7 @@ def read_database(state_dir: Path) -> dict[str, Any]:
                 "settledAt": str(row["settled_at"] or ""),
                 "lastError": last_error,
                 "handoffActive": handoff_active,
-                "openTurn": open_turn,
+                "openTurn": thread_id in open_turns,
                 "goal": str(row["goal"] or ""),
             }
             tasks.append(task)
@@ -310,7 +402,7 @@ def read_database(state_dir: Path) -> dict[str, Any]:
                     "branch": branch,
                     "threadId": thread_id,
                     "title": task["title"],
-                    "inProgress": handoff_active or task["status"] in ACTIVE_STATUSES,
+                    "inProgress": working or handoff_active,
                 }
 
         handoffs = []
@@ -355,16 +447,12 @@ def try_status_endpoint(url: str) -> dict[str, Any] | None:
 
 def counts_from(db: dict[str, Any]) -> dict[str, int]:
     tasks = db.get("tasks") or []
-    active = 0
-    for task in tasks:
-        status = normalize_status(task.get("status"))
-        if status in ACTIVE_STATUSES or task.get("openTurn"):
-            active += 1
+    active = sum(1 for task in tasks if task.get("working") is True)
     worktrees = db.get("worktrees") or []
     in_progress_trees = sum(1 for tree in worktrees if tree.get("inProgress"))
     return {
         "activeAgents": active,
-        "worktrees": in_progress_trees or len(worktrees),
+        "worktrees": in_progress_trees,
         "handoffs": len(db.get("handoffs") or []),
         "recentTasks": len(tasks),
     }
