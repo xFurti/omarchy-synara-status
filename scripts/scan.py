@@ -51,8 +51,9 @@ ERROR_STATUSES = {"error", "failed", "crashed", "interrupted", "unavailable"}
 HANDOFF_PHASES = {"pending", "git_applied", "uncertain", "handing_off", "handoff"}
 # Session `running` only means the provider process is attached. A turn can
 # stay `running` in SQLite after the UI has already settled, so "working"
-# needs a recent turn plus activity after that turn started.
+# needs a recent heartbeat. After Synara exits, leftover rows are idle.
 TURN_GRACE_SEC = 60
+TURN_STALE_SEC = 180
 
 TASK_SQL = """
 SELECT
@@ -247,16 +248,14 @@ def is_working(
     clock = now or datetime.now(timezone.utc)
     started = parse_iso(turn_started_at)
     activity = parse_iso(activity_at)
-    if started is None:
-        if activity is None:
-            return False
-        return (clock - activity).total_seconds() <= TURN_GRACE_SEC
-    age = (clock - started).total_seconds()
-    if age <= TURN_GRACE_SEC:
-        return True
-    if activity is None:
+    last = activity or started
+    if last is None:
         return False
-    return activity >= started
+    if (clock - last).total_seconds() > TURN_STALE_SEC:
+        return False
+    if started is not None and activity is not None and activity < started:
+        return (clock - started).total_seconds() <= TURN_GRACE_SEC
+    return True
 
 
 def classify_status(working: bool, session_status: str, runtime_status: str) -> str:
@@ -300,16 +299,29 @@ def read_providers(state_dir: Path) -> list[dict[str, Any]]:
     return providers
 
 
-def open_sqlite(db_path: Path) -> sqlite3.Connection | None:
+def open_sqlite(db_path: Path, allow_wal: bool = False) -> sqlite3.Connection | None:
     if not db_path.is_file():
         return None
-    uri = "file:" + quote(str(db_path), safe="/") + "?mode=ro&immutable=1"
-    try:
-        conn = sqlite3.connect(uri, uri=True, timeout=0.2)
-        conn.row_factory = sqlite3.Row
-        return conn
-    except sqlite3.Error:
-        return None
+    base = "file:" + quote(str(db_path), safe="/") + "?mode=ro"
+    uris = []
+    if allow_wal:
+        uris.append(base)
+    uris.append(base + "&immutable=1")
+    for uri in uris:
+        conn = None
+        try:
+            conn = sqlite3.connect(uri, uri=True, timeout=0.2)
+            conn.row_factory = sqlite3.Row
+            conn.execute("SELECT 1")
+            return conn
+        except sqlite3.Error:
+            if conn is not None:
+                try:
+                    conn.close()
+                except sqlite3.Error:
+                    pass
+            continue
+    return None
 
 
 def has_handoff(handoff_json: str) -> bool:
@@ -330,9 +342,9 @@ def has_handoff(handoff_json: str) -> bool:
     return True
 
 
-def read_database(state_dir: Path) -> dict[str, Any]:
+def read_database(state_dir: Path, allow_wal: bool = False) -> dict[str, Any]:
     empty: dict[str, Any] = {"tasks": [], "handoffs": [], "worktrees": [], "openTurns": set()}
-    conn = open_sqlite(state_dir / "state.sqlite")
+    conn = open_sqlite(state_dir / "state.sqlite", allow_wal=allow_wal)
     if conn is None:
         return empty
     try:
@@ -498,7 +510,15 @@ def scan(data_dir: str, endpoint: str) -> dict[str, Any]:
     snapshot["running"] = bool(runtime and pid_alive(int(runtime["pid"])))
     snapshot["providers"] = read_providers(state_dir)
 
-    db = read_database(state_dir)
+    db = read_database(state_dir, allow_wal=not snapshot["running"])
+    if not snapshot["running"]:
+        for task in db["tasks"]:
+            task["working"] = False
+            task["handoffActive"] = False
+            task["status"] = classify_status(False, task.get("sessionStatus", ""), task.get("runtimeStatus", ""))
+        for tree in db["worktrees"]:
+            tree["inProgress"] = False
+        db["handoffs"] = []
     snapshot["tasks"] = db["tasks"]
     snapshot["worktrees"] = db["worktrees"]
     snapshot["handoffs"] = db["handoffs"]

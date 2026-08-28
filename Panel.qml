@@ -26,7 +26,7 @@ Panel {
 
   readonly property var snapshot: source && source.snapshot ? source.snapshot : Model.defaultSnapshot()
   readonly property var allTasks: source && source.tasks ? source.tasks : []
-  readonly property var tasks: Model.liveTasks(allTasks)
+  readonly property var tasks: Model.liveTasks(allTasks, root.snapshot.running)
   readonly property var counts: source && source.counts ? source.counts : { activeAgents: 0, worktrees: 0, handoffs: 0, recentTasks: 0 }
   readonly property string visualState: source ? String(source.visualState || "idle") : "idle"
   readonly property color stateColor: colorForState(visualState)

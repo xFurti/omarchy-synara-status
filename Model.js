@@ -118,27 +118,24 @@ function parseTime(value) {
 }
 
 // Session `running` means the provider process is still attached. A stale
-// turn can stay `running` in SQLite after the UI has settled, so "working"
-// needs a current turn plus activity after that turn started (or a short
-// grace window at the start of a turn).
+// turn can stay `running` in SQLite after the UI has settled or after
+// Synara exits, so "working" needs a recent heartbeat.
 var TURN_GRACE_MS = 60000
+var TURN_STALE_MS = 180000
 
 function inferWorking(task, nowMs) {
   if (!task) return false
-  if (typeof task.working === "boolean") return task.working
   if (String(task.latestTurnCompletedAt || "") !== "") return false
   var state = normalizeStatus(task.latestTurnState || "")
   if (!ACTIVE_STATUSES[state]) return false
   var now = nowMs === undefined ? Date.now() : Number(nowMs)
   var started = parseTime(task.latestTurnStartedAt)
   var activity = parseTime(task.latestActivityAt)
-  if (!started) {
-    if (!activity) return false
-    return (now - activity) <= TURN_GRACE_MS
-  }
-  if ((now - started) <= TURN_GRACE_MS) return true
-  if (!activity) return false
-  return activity >= started
+  var last = activity > started ? activity : started
+  if (!last) return false
+  if ((now - last) > TURN_STALE_MS) return false
+  if (started && activity && activity < started && (now - started) > TURN_GRACE_MS) return false
+  return true
 }
 
 function taskKind(task) {
@@ -157,7 +154,8 @@ function isLiveTask(task) {
   return kind === "active" || kind === "handoff" || kind === "error"
 }
 
-function liveTasks(tasks) {
+function liveTasks(tasks, running) {
+  if (running === false) return []
   var list = Array.isArray(tasks) ? tasks : []
   var out = []
   for (var i = 0; i < list.length; i++) {
@@ -167,8 +165,9 @@ function liveTasks(tasks) {
 }
 
 function deriveVisualState(snapshot) {
-  var counts = snapshot && snapshot.counts ? snapshot.counts : { activeAgents: 0, worktrees: 0, handoffs: 0, recentTasks: 0 }
-  var tasks = snapshot && Array.isArray(snapshot.tasks) ? snapshot.tasks : []
+  if (!snapshot || snapshot.installed !== true || snapshot.running !== true) return "idle"
+  var counts = snapshot.counts ? snapshot.counts : { activeAgents: 0, worktrees: 0, handoffs: 0, recentTasks: 0 }
+  var tasks = Array.isArray(snapshot.tasks) ? snapshot.tasks : []
   var hasError = false
   for (var i = 0; i < tasks.length; i++) {
     if (taskKind(tasks[i]) === "error") hasError = true
@@ -206,13 +205,13 @@ function buildSummary(snapshot) {
 }
 
 function statusTextFor(snapshot) {
-  var state = snapshot && snapshot.visualState ? snapshot.visualState : "idle"
   if (!snapshot || !snapshot.installed) return "Offline"
+  if (!snapshot.running) return "Offline"
+  var state = snapshot.visualState ? snapshot.visualState : "idle"
   if (state === "error") return "Error"
   if (state === "handoff") return "Handoff"
   if (state === "active") return "Active"
-  if (snapshot.running) return "Idle"
-  return "Offline"
+  return "Idle"
 }
 
 function statusDetailFor(snapshot) {
@@ -260,17 +259,21 @@ function parseSnapshot(raw) {
 
   var counts = data.counts && typeof data.counts === "object" ? data.counts : {}
   var activeAgents = 0
-  for (var i = 0; i < snapshot.tasks.length; i++) {
-    if (taskKind(snapshot.tasks[i]) === "active") activeAgents += 1
-  }
   var inProgressTrees = 0
-  for (var t = 0; t < snapshot.worktrees.length; t++) {
-    if (snapshot.worktrees[t] && snapshot.worktrees[t].inProgress) inProgressTrees += 1
+  var handoffCount = 0
+  if (snapshot.running) {
+    for (var i = 0; i < snapshot.tasks.length; i++) {
+      if (taskKind(snapshot.tasks[i]) === "active") activeAgents += 1
+    }
+    for (var t = 0; t < snapshot.worktrees.length; t++) {
+      if (snapshot.worktrees[t] && snapshot.worktrees[t].inProgress) inProgressTrees += 1
+    }
+    handoffCount = snapshot.handoffs.length
   }
   snapshot.counts = {
     activeAgents: activeAgents,
-    worktrees: Array.isArray(data.worktrees) ? inProgressTrees : Number(counts.worktrees || 0),
-    handoffs: Array.isArray(data.handoffs) ? snapshot.handoffs.length : Number(counts.handoffs || 0),
+    worktrees: Array.isArray(data.worktrees) ? inProgressTrees : (snapshot.running ? Number(counts.worktrees || 0) : 0),
+    handoffs: Array.isArray(data.handoffs) ? handoffCount : (snapshot.running ? Number(counts.handoffs || 0) : 0),
     recentTasks: Array.isArray(data.tasks) ? snapshot.tasks.length : Number(counts.recentTasks || 0)
   }
 
